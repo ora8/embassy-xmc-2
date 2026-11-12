@@ -23,6 +23,8 @@ pub const UNCONFIGURED: Clocks = Clocks {
 use core::ptr::read_volatile;
 
 const SCU_CLK_SYSCLKCR: usize = 0x5000_460C;
+const SCU_CLK_CPUCLKCR: usize = 0x5000_4610;
+const SCU_CLK_PBCLKCR: usize = 0x5000_4614;
 const SCU_CLK_CCUCLKCR: usize = 0x5000_4620;
 /// Interner 24-MHz-Backup-Takt fOFI, mit dem der Chip nach dem Reset läuft.
 const F_OFI_HZ: u32 = 24_000_000;
@@ -42,6 +44,14 @@ pub fn sys_clock_hz() -> Option<u32> {
         return None; // SYSSEL = fPLL
     }
     Some(F_OFI_HZ / ((sysclkcr & 0xFF) + 1))
+}
+
+/// Peripherie-Takt fPERIPH (u. a. für USIC/UART): `fCPU / (PBDIV + 1)` mit
+/// `fCPU = fSYS / (CPUDIV + 1)`. `None` wie bei [`sys_clock_hz`].
+pub fn peripheral_clock_hz() -> Option<u32> {
+    let cpudiv = (read_reg(SCU_CLK_CPUCLKCR) & 1) + 1;
+    let pbdiv = (read_reg(SCU_CLK_PBCLKCR) & 1) + 1;
+    sys_clock_hz().map(|f| f / cpudiv / pbdiv)
 }
 
 /// Takt der CCU-Module: `fCCU = fSYS / (CCUDIV + 1)`. `None` wie bei [`sys_clock_hz`].

@@ -133,6 +133,19 @@ impl Pin {
         self.reg(OMR)
     }
 
+    /// Pin als Push-Pull-Ausgang der alternativen Funktion `alt` (1..=4) schalten,
+    /// z. B. ALT2 = U0C0.DOUT0 an P1.5. Wird von den Peripherie-Treibern benutzt.
+    pub(crate) fn set_alt_output(&self, alt: u8) {
+        assert!((1..=4).contains(&alt), "ALT-Funktion muss 1..=4 sein");
+        assert!(self.port <= MAX_OUTPUT_PORT, "Port hat keine Ausgangsregister");
+        self.set_pc(IOCR_PC_OUTPUT_PUSH_PULL | alt as u32);
+    }
+
+    /// Pin als Eingang mit Pull-Up schalten (z. B. UART-RX, Ruhepegel High).
+    pub(crate) fn set_input_pull_up(&self) {
+        self.set_pc(IOCR_PC_INPUT_PULL_UP);
+    }
+
     /// Schreibt das PCx-Feld dieses Pins im passenden IOCRn-Register.
     fn set_pc(&self, pc: u32) {
         // 4 Pins pro IOCR-Register, je 8 Bit; PCx liegt in den Bits [7:3] des Bytes.

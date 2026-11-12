@@ -11,6 +11,7 @@ pub mod gpio;
 pub mod interrupt;
 pub mod clocks;
 pub mod time_drivers;
+pub mod uart;
 
 /// Board/peripheral ownership token.
 ///
