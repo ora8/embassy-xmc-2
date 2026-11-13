@@ -10,5 +10,9 @@ cortex-m-rt.workspace = true
 panic-halt.workspace = true
 embassy-executor.workspace = true
 embassy-time.workspace = true
-embassy-xmc = { path = "../embassy-xmc", features = ["xmc4700"] }
+embassy-xmc = { path = "../embassy-xmc", features = ["xmc4700", "mipidsi"] }
 embassy-sync.workspace = true
+embedded-hal.workspace = true
+embedded-hal-bus.workspace = true
+embedded-graphics.workspace = true
+mipidsi.workspace = true

@@ -296,6 +296,8 @@ pub fn init(ccu_hz: u32) {
         "time_drivers::init darf nur einmal aufgerufen werden"
     );
 
+    crate::init();
+
     // 1. Takt freigeben, Modul entsperren und aus dem Reset holen.
     wr(SCU_CLK_CLKSET, SCU_CCUEN);
     wr(SCU_CLK_CGATCLR0, SCU_CCU40);

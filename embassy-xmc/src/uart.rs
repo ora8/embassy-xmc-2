@@ -23,21 +23,14 @@
 //! Interrupt-Handler kann sich zeichenweise in eine laufende Ausgabe schieben.
 
 use core::fmt;
-use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gpio::Pin;
+use crate::usic::{self, rd, wr};
 
 // ---------------------------------------------------------------------------
 // Register (Adressen und Bits gegen die SVD des xmc4700-PAC geprüft)
 // ---------------------------------------------------------------------------
-
-// SCU: Takt und Reset von USIC0 (jeweils Bit 11)
-const SCU_CLK_CGATSTAT0: usize = 0x5000_4640;
-const SCU_CLK_CGATCLR0: usize = 0x5000_4648;
-const SCU_RESET_PRSTAT0: usize = 0x5000_440C;
-const SCU_RESET_PRCLR0: usize = 0x5000_4414;
-const SCU_USIC0: u32 = 1 << 11;
 
 const USIC0_CH0: usize = 0x4003_0000;
 
@@ -79,25 +72,6 @@ const RBUFSR_RDV1: u32 = 1 << 14;
 /// DX0CR.DSEL: Eingang DX0B
 const DX0_DSEL_B: u32 = 1;
 
-#[inline(always)]
-fn rd(addr: usize) -> u32 {
-    // Feste MMIO-Adressen, siehe Konstanten oben.
-    unsafe { read_volatile(addr as *const u32) }
-}
-
-#[inline(always)]
-fn wr(addr: usize, value: u32) {
-    unsafe { write_volatile(addr as *mut u32, value) }
-}
-
-fn wait_clear(addr: usize, mask: u32) {
-    for _ in 0..10_000 {
-        if rd(addr) & mask == 0 {
-            return;
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Konfiguration
 // ---------------------------------------------------------------------------
@@ -120,34 +94,6 @@ pub enum Error {
     InvalidBaudrate,
 }
 
-/// Teiler für `fbaud = fPERIPH * STEP / 1024 / (PDIV + 1) / OVERSAMPLING`.
-///
-/// Gibt `(STEP, PDIV + 1)` mit der kleinsten Abweichung zurück.
-fn calc_divider(f_periph: u32, baud: u32) -> Option<(u32, u32)> {
-    if baud == 0 {
-        return None;
-    }
-    let f = f_periph as u64;
-    let b = baud as u64;
-    let den = 1024 * OVERSAMPLING as u64 * b;
-    let mut best: Option<(u32, u32, u64)> = None;
-    for step in 1..=1023u64 {
-        // Passender Vorteiler (gerundet), muss in PDIV (10 Bit) passen
-        let p = (f * step + den / 2) / den;
-        if !(1..=1024).contains(&p) {
-            continue;
-        }
-        let actual = f * step / (1024 * OVERSAMPLING as u64 * p);
-        let err = actual.abs_diff(b);
-        if best.map_or(true, |(_, _, e)| err < e) {
-            best = Some((step as u32, p as u32, err));
-        }
-    }
-    // Mehr als 2 % Abweichung verträgt UART nicht zuverlässig.
-    best.filter(|&(_, _, err)| err * 50 <= b)
-        .map(|(step, p, _)| (step, p))
-}
-
 // ---------------------------------------------------------------------------
 // Treiber
 // ---------------------------------------------------------------------------
@@ -162,15 +108,16 @@ impl Uart {
     ///
     /// `f_periph_hz` ist der Peripherie-Takt (siehe [`crate::clocks::peripheral_clock_hz`]).
     pub fn new_debug(f_periph_hz: u32, config: Config) -> Result<Self, Error> {
-        let (step, pdiv) =
-            calc_divider(f_periph_hz, config.baudrate).ok_or(Error::InvalidBaudrate)?;
+        let div = usic::calc_divider(f_periph_hz, config.baudrate, OVERSAMPLING, false)
+            // Mehr als 2 % Abweichung verträgt UART nicht zuverlässig.
+            .filter(|d| d.actual.abs_diff(config.baudrate) as u64 * 50 <= config.baudrate as u64)
+            .ok_or(Error::InvalidBaudrate)?;
         let base = USIC0_CH0;
+        // Ohne das stürzt die Formatierung von Zahlen in `println!` ab (siehe `crate::init`).
+        crate::init();
 
         // 1. USIC0 takten und aus dem Reset holen.
-        wr(SCU_CLK_CGATCLR0, SCU_USIC0);
-        wait_clear(SCU_CLK_CGATSTAT0, SCU_USIC0);
-        wr(SCU_RESET_PRCLR0, SCU_USIC0);
-        wait_clear(SCU_RESET_PRSTAT0, SCU_USIC0);
+        usic::enable_module(usic::Module::Usic0);
 
         // 2. Kanal einschalten (Schreibzugriff mit Bit-Schutz), danach Kanal deaktivieren,
         //    solange konfiguriert wird.
@@ -179,8 +126,8 @@ impl Uart {
         wr(base + CCR, 0);
 
         // 3. Baudrate
-        wr(base + FDR, FDR_DM_FRACTIONAL | step);
-        wr(base + BRG, ((pdiv - 1) << 16) | ((OVERSAMPLING - 1) << 10));
+        wr(base + FDR, FDR_DM_FRACTIONAL | div.step);
+        wr(base + BRG, ((div.pdiv - 1) << 16) | ((OVERSAMPLING - 1) << 10));
 
         // 4. Rahmen: 8 Bit, LSB zuerst, Ruhepegel High
         wr(base + SCTR, SCTR_PDL | SCTR_TRM | SCTR_FLE_8 | SCTR_WLE_8);

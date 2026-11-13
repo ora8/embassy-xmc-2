@@ -15,8 +15,12 @@ cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = { version = "0.7", features = ["set-sp", "set-vtor", "device"] }
 critical-section = "1.2"
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
-embassy-time = { version = "0.5", features = ["tick-hz-3_000_000"] }
+embassy-time = { version = "0.5", features = ["tick-hz-9_000_000"] }
 embassy-time-driver = "0.2"
 embassy-time-queue-utils = "0.3"
 embassy-sync = "0.8"
 panic-halt = "1"
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+embedded-graphics = "0.8"
+mipidsi = "0.10"

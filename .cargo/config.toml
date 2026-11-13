@@ -2,4 +2,5 @@
 target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
+runner = "probe-rs run --chip XMC4700-F144x2048"
 rustflags = ["-C", "link-arg=-Tlink.x"]

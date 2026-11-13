@@ -19,10 +19,11 @@ It intentionally does not guess XMC4700 register addresses, clock frequencies, p
 settings, or LED polarity. In particular:
 
 1. GPIO register backend is not implemented yet.
-2. XMC clock-tree and peripheral clock setup are not implemented yet.
-3. The `embassy-time-driver` (CCU40, see below) is implemented but has not been verified
-   on hardware yet. It needs a CCU clock of `TICK_HZ * 2^n` (n = 0..=15); with the
-   unconfigured 24 MHz clock that is `tick-hz-3_000_000` (the workspace default).
+2. Clock tree: `clocks::init_144mhz()` runs the system at 144 MHz from the 12 MHz crystal
+   (PLL, flash wait states); verified on hardware.
+3. The `embassy-time-driver` (CCU40, see below) is implemented and verified
+   on hardware. It needs a CCU clock of `TICK_HZ * 2^n` (n = 0..=15); with 144 MHz
+   that is `tick-hz-9_000_000` (the workspace default).
 4. Startup/linker memory layout and the exact Relax Kit board revision still need
    verification against the board documentation.
 
@@ -50,10 +51,10 @@ board startup/runtime arrangement before producing a flashable ELF.
 ## Planned implementation order
 
 1. Confirm Relax Kit revision, oscillator, and linker memory map.
-2. Implement `SystemInit`/clock tree and flash wait states.
+2. ~~Implement `SystemInit`/clock tree and flash wait states.~~ Done (144 MHz).
 3. Implement safe GPIO pin ownership and LED 5.8 output.
-4. ~~Implement a monotonic 64-bit Embassy time driver using a CCU timer.~~ Done (CCU40), hardware test pending.
-5. Add USIC SPI, I2C and UART drivers.
+4. ~~Implement a monotonic 64-bit Embassy time driver using a CCU timer.~~ Done (CCU40), verified on hardware.
+5. Add USIC SPI, I2C and UART drivers. (UART and SPI done, I2C open)
 6. Add board examples: LED heartbeat, I2C scan, SPI TFT (ILI9341/ST7796).
 
 ## Time driver (CCU40)
@@ -79,7 +80,64 @@ provides an empty `device.x`).
 | 144 MHz | `tick-hz-9_000_000`    | 4    |
 
 `time_drivers::init(clocks::ccu_clock_hz().unwrap())` panics if no prescaler fits.
-`ccu_clock_hz()` only knows the 24 MHz backup clock; with the PLL selected it returns `None`.
+`ccu_clock_hz()` computes the clock from the SCU/PLL registers. Call `time_drivers::init`
+only after the final clock setup.
+
+## UART / Serial Monitor
+
+`embassy-xmc/src/uart.rs` drives USIC0 channel 0 in ASC mode (blocking, 8N1). On the
+Relax Kit this channel is wired to the on-board J-Link's virtual COM port
+(`/dev/ttyACM0` on Linux): TX = P1.5 (ALT2, U0C0.DOUT0), RX = P1.4 (U0C0.DX0B).
+
+```rust
+embassy_xmc::init(); // clears SCB.CCR.UNALIGN_TRP, set by the boot ROM
+clocks::init_144mhz().unwrap(); // first: UART and timer derive their dividers from it
+let f_periph = clocks::peripheral_clock_hz().unwrap();
+let serial = Uart::new_debug(f_periph, uart::Config { baudrate: 115_200 }).unwrap();
+uart::init_print(serial);
+println!("Hallo {}", 42);
+```
+
+`print!`/`println!` translate `\n` to `\r\n`. `Uart` also offers `write`, `flush`,
+`read_byte`, `try_read_byte` and `core::fmt::Write`.
+
+Notes from the hardware test:
+
+- The boot ROM sets `SCB.CCR.UNALIGN_TRP`. Rust's `core::fmt` uses unaligned accesses on
+  `thumbv7em`, so formatting a number caused a UsageFault. `embassy_xmc::init()` clears the bit.
+- **Clock:** the internal backup oscillator fOFI is imprecise (measured about 36 MHz instead
+  of the nominal 24 MHz on the test board). Always call `clocks::init_144mhz()` first; with
+  it, UART at 115200 baud and Embassy time are exact (board vs. host time over 12 s: 1.0000).
+
+## SPI / ILI9341 display
+
+`embassy-xmc/src/spi.rs` is a blocking SPI master on USIC2 channel 0 (SSC mode), wired to
+the Relax Kit's Arduino header like Infineon's XMC-for-Arduino: SCK = P3.9 (D13),
+MOSI = P3.8 (D11), MISO = P3.7 (D12). It implements `embedded_hal::spi::SpiBus`; GPIO
+`Output`/`Input` implement the `embedded-hal` digital traits, so `embedded-hal-bus` and
+display drivers such as `mipidsi` work directly.
+
+- All four SPI modes, up to fPERIPH/2; `spi::Config::frequency` is an upper limit.
+- Verified on hardware with the internal loopback (`cargo run --release --bin spi_loopback`):
+  modes 0..3 at 1/10/20/40 MHz correct; up to 20 MHz the bus runs gap-free (2436 KiB/s).
+- `cargo run --release --bin ili9341`: ILI9341 demo with `mipidsi` + `embedded-graphics`,
+  CS = P3.10 (D10), DC = P1.11 (D9), RESET = P1.10 (D8), SPI 20 MHz. A full-screen clear
+  takes 61 ms. Wiring table and settings are at the top of
+  `embassy-xmc-test/src/bin/ili9341.rs`.
+
+### Parallel ILI9341 (e.g. TFT_320QDT_9341)
+
+Modules with a 40-pin header (DB0..DB15, RS, WR, RD, CS) use the ILI9341's 16-bit 8080
+parallel bus, not SPI. `embassy-xmc/src/parallel.rs` (`Parallel16`) drives DB0..DB15 on
+P0.0..P0.15 with one `OMR` write per word; with the `mipidsi` feature it implements
+`mipidsi::interface::Interface`. Demo: `cargo run --release --bin ili9341_parallel`;
+the wiring table is at the top of `embassy-xmc-test/src/bin/ili9341_parallel.rs`
+(RS = P1.11/D9, WR = P1.10/D8, RD = P1.9/D7, CS = P1.8/D4, REST = P1.0/D2).
+Touch (XPT2046) and the SD slot of such modules use SPI.
+
+Timing: without padding a word took 39 ns (ILI9341 needs ≥ 66 ns), so the WR strobe is
+padded with port reads (`LOW_READS` = 3, `HIGH_READS` = 2); the resulting time per word is
+estimated, not yet measured on hardware. The demo prints "ns pro Wort".
 
 ## Why a CCU timer for Embassy time?
 

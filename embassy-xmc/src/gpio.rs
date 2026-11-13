@@ -30,7 +30,7 @@ const PDR0: usize = 0x40; // Pad Driver Mode Register für Pins 0..7 (PDR1 = 0x4
 const PDISC: usize = 0x60; // Pin Function Decision Control (nur P14/P15 relevant)
 
 /// PCx-Feld in IOCRn: General-Purpose-Ausgang, Push-Pull.
-const IOCR_PC_OUTPUT_PUSH_PULL: u32 = 0b1_0000;
+pub(crate) const IOCR_PC_OUTPUT_PUSH_PULL: u32 = 0b1_0000;
 /// PCx-Feld in IOCRn für Eingänge: Tristate / Pull-Down / Pull-Up.
 const IOCR_PC_INPUT_TRISTATE: u32 = 0b0_0000;
 const IOCR_PC_INPUT_PULL_DOWN: u32 = 0b0_0001;
@@ -147,7 +147,7 @@ impl Pin {
     }
 
     /// Schreibt das PCx-Feld dieses Pins im passenden IOCRn-Register.
-    fn set_pc(&self, pc: u32) {
+    pub(crate) fn set_pc(&self, pc: u32) {
         // 4 Pins pro IOCR-Register, je 8 Bit; PCx liegt in den Bits [7:3] des Bytes.
         let reg = self.reg(IOCR0 + 4 * (self.pin as usize / 4));
         let shift = 8 * (self.pin as u32 % 4) + 3;
@@ -159,7 +159,7 @@ impl Pin {
     }
 
     /// Schreibt das PDx-Feld (3 Bit) dieses Pins in PDR0 (Pins 0..7) bzw. PDR1 (Pins 8..15).
-    fn set_drive(&self, strength: DriveStrength) {
+    pub(crate) fn set_drive(&self, strength: DriveStrength) {
         let reg = self.reg(PDR0 + 4 * (self.pin as usize / 8));
         let shift = 4 * (self.pin as u32 % 8);
         critical_section::with(|_| unsafe {
@@ -206,6 +206,7 @@ impl Output {
         out
     }
 
+    #[inline]
     pub fn set_level(&mut self, level: Level) {
         let pin = self.pin.pin as u32;
         // OMR: Bits 0..15 = PSn (setzen), Bits 16..31 = PRn (löschen).
@@ -217,6 +218,7 @@ impl Output {
         unsafe { write_volatile(self.pin.omr_adr(), value) }
     }
 
+    #[inline]
     pub fn toggle(&mut self) {
         let pin = self.pin.pin as u32;
         // PSn und PRn gleichzeitig gesetzt => Toggle, atomar in Hardware.
@@ -280,5 +282,54 @@ impl Input {
 
     pub const fn pin(&self) -> &Pin {
         &self.pin
+    }
+}
+
+// ---------------------------------------------------------------------------
+// embedded-hal 1.0
+// ---------------------------------------------------------------------------
+
+impl embedded_hal::digital::ErrorType for Output {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::digital::OutputPin for Output {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.set_level(Level::Low);
+        Ok(())
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.set_level(Level::High);
+        Ok(())
+    }
+}
+
+impl embedded_hal::digital::StatefulOutputPin for Output {
+    fn is_set_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Output::is_set_high(self))
+    }
+
+    fn is_set_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(!Output::is_set_high(self))
+    }
+
+    fn toggle(&mut self) -> Result<(), Self::Error> {
+        Output::toggle(self);
+        Ok(())
+    }
+}
+
+impl embedded_hal::digital::ErrorType for Input {
+    type Error = core::convert::Infallible;
+}
+
+impl embedded_hal::digital::InputPin for Input {
+    fn is_high(&mut self) -> Result<bool, Self::Error> {
+        Ok(Input::is_high(self))
+    }
+
+    fn is_low(&mut self) -> Result<bool, Self::Error> {
+        Ok(Input::is_low(self))
     }
 }
